@@ -1,7 +1,8 @@
 feign:
-  timeout: 40s
-  retry_count: 0  // gia tri 0 la khong retry
-  retry_wait: 1s
-  debug: true
-  headers:
-    Token: Bearer 1231231231231231231231
+  account:
+    timeout: 40s
+    retry_count: 0  // gia tri 0 la khong retry
+    retry_wait: 1s
+    debug: true
+    headers:
+      Token: Bearer 1231231231231231231231

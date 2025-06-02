@@ -43,7 +43,7 @@ func main() {
 	if err != nil {
 		return
 	}
-	cfg := feign.DefaultConfig()
+	cfg := feign.NewConfig("feign.account")
 	client := &UserClient{} // KHỞI TẠO
 	feignClient := feign.New(cfg)
 	feignClient.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
