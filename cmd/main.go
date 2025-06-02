@@ -33,14 +33,19 @@ type UserClient struct {
 	GetAllUser   func(ctx context.Context, auth string) ([]User, error)                                                                 `feign:"@POST /users | @Header Authorization"`
 }
 
+type Config struct {
+	*feign.Config
+	XApiKey string
+}
+
 func main() {
-	err := config.LoadConfig(&feign.Config{})
+	err := config.LoadConfig(&Config{})
 	if err != nil {
 		return
 	}
 	cfg := feign.DefaultConfig()
 	client := &UserClient{} // KHỞI TẠO
-	feignClient := feign.NewClient(cfg)
+	feignClient := feign.New(cfg)
 	feignClient.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
 		fmt.Println("Request:", r.Method, r.URL)
 		// Thêm header chung

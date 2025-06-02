@@ -1,6 +1,7 @@
 package feign
 
 import (
+	"fmt"
 	"github.com/spf13/viper"
 	"strings"
 	"time"
@@ -28,5 +29,29 @@ func DefaultConfig() *Config {
 		RetryCount: viper.GetInt("feign.retry_count"),
 		RetryWait:  viper.GetDuration("feign.retry_wait"),
 		Debug:      viper.GetBool("feign.debug"),
+		Headers:    viper.GetStringMapString("feign.headers"),
+	}
+}
+
+func NewConfig(prefix string) *Config {
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+
+	getKey := func(key string) string {
+		return fmt.Sprintf("%s.%s", prefix, key)
+	}
+
+	viper.SetDefault(getKey("timeout"), "30s")
+	viper.SetDefault(getKey("retry_count"), 0)
+	viper.SetDefault(getKey("retry_wait"), "1s")
+	viper.SetDefault(getKey("debug"), false)
+
+	return &Config{
+		Url:        viper.GetString(getKey("url")),
+		Timeout:    viper.GetDuration(getKey("timeout")),
+		RetryCount: viper.GetInt(getKey("retry_count")),
+		RetryWait:  viper.GetDuration(getKey("retry_wait")),
+		Debug:      viper.GetBool(getKey("debug")),
+		Headers:    viper.GetStringMapString(getKey("headers")),
 	}
 }
