@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/viper"
 	"reflect"
 	"strings"
+
+	"github.com/spf13/viper"
 )
 
 // HttpError giúp phân biệt lỗi HTTP như 401, 404, 500
@@ -57,9 +58,10 @@ func (c *Client) generateFuncHandler(methodType reflect.Type, meta tagMeta, base
 		ctx := args[0].Interface().(context.Context)
 		var body interface{}
 
-		if len(meta.BodyParam) == 0 {
-			for k, _ := range meta.BodyParam {
+		if len(meta.BodyParam) > 0 {
+			for k := range meta.BodyParam {
 				body = args[k].Interface()
+				break // Chỉ hỗ trợ một body duy nhất
 			}
 		}
 
@@ -108,7 +110,7 @@ func (c *Client) generateFuncHandler(methodType reflect.Type, meta tagMeta, base
 		for k, v := range mergedHeaders {
 			r.SetHeader(k, v)
 		}
-		if len(meta.BodyParam) > 0 {
+		if len(meta.BodyParam) > 0 && meta.HttpMethod != "GET" {
 			r.SetHeader("Content-Type", "application/json")
 			r.SetBody(body)
 		}
@@ -131,12 +133,25 @@ func (c *Client) generateFuncHandler(methodType reflect.Type, meta tagMeta, base
 			})}
 		}
 
-		out := reflect.New(methodType.Out(0).Elem())
+		retType := methodType.Out(0)
+		isPointer := retType.Kind() == reflect.Pointer
+
+		var out reflect.Value
+		if isPointer {
+			out = reflect.New(retType.Elem())
+		} else {
+			out = reflect.New(retType)
+		}
+
 		if err := json.Unmarshal(resp.Body(), out.Interface()); err != nil {
 			fmt.Println("❌ JSON Decode Error:", err)
-			return []reflect.Value{reflect.Zero(methodType.Out(0)), reflect.ValueOf(fmt.Errorf("unmarshal failed: %w", err))}
+			return []reflect.Value{reflect.Zero(retType), reflect.ValueOf(fmt.Errorf("unmarshal failed: %w", err))}
 		}
-		return []reflect.Value{out, reflect.Zero(methodType.Out(1))}
+
+		if isPointer {
+			return []reflect.Value{out, reflect.Zero(methodType.Out(1))}
+		}
+		return []reflect.Value{out.Elem(), reflect.Zero(methodType.Out(1))}
 	})
 }
 
@@ -169,7 +184,7 @@ func parseTagInfo(method reflect.StructField) tagMeta {
 		if line == "" {
 			continue
 		}
-		parts := strings.Fields(line)
+		parts := strings.SplitN(line, " ", 2)
 		if len(parts) < 2 {
 			continue
 		}
