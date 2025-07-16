@@ -98,56 +98,68 @@ func (c *Client) generateFuncHandler(methodType reflect.Type, meta tagMeta, base
 			}
 		}
 
-		// Prepare request
-		r := c.R().SetContext(ctx)
-		mergedHeaders := make(map[string]string)
-		for k, v := range c.headers {
-			mergedHeaders[k] = v
-		}
-		for k, v := range headersMap {
-			mergedHeaders[k] = v
-		}
-		for k, v := range mergedHeaders {
-			r.SetHeader(k, v)
-		}
-		if len(meta.BodyParam) > 0 && meta.HttpMethod != "GET" {
-			r.SetHeader("Content-Type", "application/json")
-			r.SetBody(body)
-		}
-		if len(queryParams) > 0 {
-			r.SetQueryParams(queryParams)
-		}
-
-		fmt.Printf("➡️ %s: %s\n", meta.HttpMethod, baseUrl+pathProcessed)
-
-		resp, err := r.Execute(meta.HttpMethod, pathProcessed)
-		if err != nil {
-			return []reflect.Value{reflect.Zero(methodType.Out(0)), reflect.ValueOf(&HttpError{
-				Status: "connection failed", Body: err.Error(),
-			})}
-		}
-
-		if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-			return []reflect.Value{reflect.Zero(methodType.Out(0)), reflect.ValueOf(&HttpError{
-				StatusCode: resp.StatusCode(), Status: resp.Status(), Body: string(resp.Body()),
-			})}
+		// Chuẩn hóa request cho middleware
+		req := &Request{
+			Context:  ctx,
+			Method:   meta.HttpMethod,
+			Path:     pathProcessed,
+			PathVars: map[string]string{}, // Đã xử lý path rồi
+			Params:   queryParams,
+			Headers:  headersMap,
+			Body:     body,
+			Result:   nil, // Sẽ gán sau
 		}
 
 		retType := methodType.Out(0)
 		isPointer := retType.Kind() == reflect.Pointer
-
 		var out reflect.Value
 		if isPointer {
 			out = reflect.New(retType.Elem())
 		} else {
 			out = reflect.New(retType)
 		}
+		req.Result = out.Interface()
 
-		if err := json.Unmarshal(resp.Body(), out.Interface()); err != nil {
-			fmt.Println("❌ JSON Decode Error:", err)
-			return []reflect.Value{reflect.Zero(retType), reflect.ValueOf(fmt.Errorf("unmarshal failed: %w", err))}
+		handler := func(r *Request) error {
+			rResty := c.R().SetContext(r.Context)
+			for k, v := range c.headers {
+				rResty.SetHeader(k, v)
+			}
+			for k, v := range r.Headers {
+				rResty.SetHeader(k, v)
+			}
+			if len(r.Params) > 0 {
+				rResty.SetQueryParams(r.Params)
+			}
+			if r.Body != nil && r.Method != "GET" {
+				rResty.SetHeader("Content-Type", "application/json")
+				rResty.SetBody(r.Body)
+			}
+			fmt.Printf("➡️ %s: %s\n", r.Method, baseUrl+r.Path)
+			resp, err := rResty.Execute(r.Method, r.Path)
+			if err != nil {
+				return &HttpError{Status: "connection failed", Body: err.Error()}
+			}
+			if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+				return &HttpError{StatusCode: resp.StatusCode(), Status: resp.Status(), Body: string(resp.Body())}
+			}
+			if err := json.Unmarshal(resp.Body(), r.Result); err != nil {
+				fmt.Println("❌ JSON Decode Error:", err)
+				return fmt.Errorf("unmarshal failed: %w", err)
+			}
+			return nil
 		}
 
+		var err error
+		if len(c.middlewares) > 0 {
+			err = c.buildChain(handler)(req)
+		} else {
+			err = handler(req)
+		}
+
+		if err != nil {
+			return []reflect.Value{reflect.Zero(retType), reflect.ValueOf(err)}
+		}
 		if isPointer {
 			return []reflect.Value{out, reflect.Zero(methodType.Out(1))}
 		}

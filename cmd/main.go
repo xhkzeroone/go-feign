@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sync/atomic"
+	"time"
+
 	"github.com/go-resty/resty/v2"
 	"github.com/xhkzeroone/go-config/config"
 	"github.com/xhkzeroone/go-feign/feign"
-	"time"
 )
 
 type User struct {
@@ -46,6 +47,56 @@ func main() {
 	cfg := feign.NewConfig("feign.account")
 	client := &UserClient{} // KHỞI TẠO
 	feignClient := feign.New(cfg)
+
+	// Ví dụ middleware logging
+	feignClient.Use(func(next feign.Handler) feign.Handler {
+		return func(req *feign.Request) error {
+			fmt.Printf("[Middleware] Before: %s %s\n", req.Method, req.Path)
+			err := next(req)
+			fmt.Printf("[Middleware] After: %s %s, err: %v\n", req.Method, req.Path, err)
+			return err
+		}
+	})
+
+	// Middleware retry: thử lại tối đa 3 lần nếu gặp lỗi
+	feignClient.Use(func(next feign.Handler) feign.Handler {
+		return func(req *feign.Request) error {
+			var lastErr error
+			maxRetries := 3
+			delay := 200 * time.Millisecond
+
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				err := next(req)
+				if err == nil {
+					if attempt > 1 {
+						fmt.Printf("[Retry] Thành công ở lần thử thứ %d\n", attempt)
+					}
+					return nil
+				}
+				lastErr = err
+				fmt.Printf("[Retry] Lỗi ở lần thử %d: %v\n", attempt, err)
+				time.Sleep(delay)
+			}
+			fmt.Printf("[Retry] Thất bại sau %d lần thử\n", maxRetries)
+			return lastErr
+		}
+	})
+
+	var totalRequests int64
+
+	// Middleware metrics: đo thời gian và đếm số request
+	feignClient.Use(func(next feign.Handler) feign.Handler {
+		return func(req *feign.Request) error {
+			start := time.Now()
+			atomic.AddInt64(&totalRequests, 1)
+			err := next(req)
+			duration := time.Since(start)
+			fmt.Printf("[Metrics] %s %s took %v (total requests: %d)\n",
+				req.Method, req.Path, duration, atomic.LoadInt64(&totalRequests))
+			return err
+		}
+	})
+
 	feignClient.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
 		fmt.Println("Request:", r.Method, r.URL)
 		// Thêm header chung
@@ -81,13 +132,13 @@ func main() {
 	//createdUser, err := client.CreateUser(newUser, "Bearer xyz")
 	//fmt.Println(createdUser, err)
 
-	if err != nil {
-		var httpErr *feign.HttpError
-		if errors.As(err, &httpErr) {
-			fmt.Println("📛 HTTP Error:", httpErr.StatusCode)
-			fmt.Println("📄 Body:", httpErr.Body)
-		} else {
-			fmt.Println("❗️Other Error:", err)
-		}
-	}
+	//if err != nil {
+	//	var httpErr *feign.HttpError
+	//	if errors.As(err, &httpErr) {
+	//		fmt.Println("📛 HTTP Error:", httpErr.StatusCode)
+	//		fmt.Println("📄 Body:", httpErr.Body)
+	//	} else {
+	//		fmt.Println("❗️Other Error:", err)
+	//	}
+	//}
 }
