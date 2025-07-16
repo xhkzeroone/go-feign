@@ -25,6 +25,7 @@ type User struct {
 }
 
 type UserClient struct {
+	*feign.Client
 	_            struct{}                                                                                                               `feign:"@Url http://localhost:8081/api/v1"`
 	GetUser      func(ctx context.Context, id string, auth string) (*User, error)                                                       `feign:"@GET /users/{id} | @Path id | @Header Authorization"`
 	GetUserById  func(ctx context.Context, user string, id string, auth string) (*User, error)                                          `feign:"@GET /users/{user} | @Path user | @Query id | @Header Authorization"`
@@ -45,11 +46,12 @@ func main() {
 		return
 	}
 	cfg := feign.NewConfig("feign.account")
-	client := &UserClient{} // KHỞI TẠO
-	feignClient := feign.New(cfg)
+	client := feign.Default(cfg, func(client *feign.Client) *UserClient {
+		return &UserClient{Client: client}
+	})
 
 	// Ví dụ middleware logging
-	feignClient.Use(func(next feign.Handler) feign.Handler {
+	client.Use(func(next feign.Handler) feign.Handler {
 		return func(req *feign.Request) error {
 			fmt.Printf("[Middleware] Before: %s %s\n", req.Method, req.Path)
 			err := next(req)
@@ -59,7 +61,7 @@ func main() {
 	})
 
 	// Middleware retry: thử lại tối đa 3 lần nếu gặp lỗi
-	feignClient.Use(func(next feign.Handler) feign.Handler {
+	client.Use(func(next feign.Handler) feign.Handler {
 		return func(req *feign.Request) error {
 			var lastErr error
 			maxRetries := 3
@@ -85,7 +87,7 @@ func main() {
 	var totalRequests int64
 
 	// Middleware metrics: đo thời gian và đếm số request
-	feignClient.Use(func(next feign.Handler) feign.Handler {
+	client.Use(func(next feign.Handler) feign.Handler {
 		return func(req *feign.Request) error {
 			start := time.Now()
 			atomic.AddInt64(&totalRequests, 1)
@@ -97,19 +99,19 @@ func main() {
 		}
 	})
 
-	feignClient.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
+	client.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
 		fmt.Println("Request:", r.Method, r.URL)
 		// Thêm header chung
 		r.SetHeader("X-Request-ID", "some-id")
 		return nil
 	})
 
-	// Thêm interceptor sau response
-	feignClient.OnAfterResponse(func(c *resty.Client, r *resty.Response) error {
+	// client interceptor sau response
+	client.OnAfterResponse(func(c *resty.Client, r *resty.Response) error {
 		fmt.Println("Response status:", r.Status())
 		return nil
 	})
-	feignClient.Create(client) // OK
+	client.Create(client) // OK
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()

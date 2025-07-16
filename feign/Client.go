@@ -20,10 +20,6 @@ var validStatusCodes = map[string][]int{
 	http.MethodDelete: {http.StatusOK, http.StatusNoContent},
 }
 
-// Handler là hàm thực hiện request, nhận các tham số chuẩn hóa
-// Bạn có thể mở rộng struct này nếu cần thêm thông tin
-// Middleware là hàm nhận next Handler và trả về Handler mới
-
 type Request struct {
 	Context  context.Context
 	Method   string
@@ -35,6 +31,16 @@ type Request struct {
 	Result   interface{}
 }
 
+type ReqOption struct {
+	Context  context.Context
+	Method   string
+	Path     string
+	PathVars map[string]string
+	Params   map[string]string
+	Headers  map[string]string
+	Body     interface{}
+}
+
 type Handler func(req *Request) error
 
 type Middleware func(next Handler) Handler
@@ -44,7 +50,7 @@ type Client struct {
 	Config      *Config
 	baseURL     string
 	headers     map[string]string
-	middlewares []Middleware // Thêm trường này
+	middlewares []Middleware
 }
 
 func New(cfg *Config) *Client {
@@ -67,12 +73,17 @@ func New(cfg *Config) *Client {
 	}
 }
 
-// Use cho phép đăng ký middleware vào client
+func Default[T any](cfg *Config, newClient func(*Client) T) T {
+	feignClient := New(cfg)
+	client := newClient(feignClient)
+	feignClient.Create(client)
+	return client
+}
+
 func (c *Client) Use(mw Middleware) {
 	c.middlewares = append(c.middlewares, mw)
 }
 
-// buildChain xây dựng chuỗi middleware
 func (c *Client) buildChain(final Handler) Handler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		final = c.middlewares[i](final)
@@ -80,97 +91,74 @@ func (c *Client) buildChain(final Handler) Handler {
 	return final
 }
 
-// CallWithoutParam gọi mà không có query param
-func (c *Client) CallWithoutParam(ctx context.Context, method, path string, headers map[string]string, body, result interface{}) error {
-	return c.CallREST(ctx, method, path, map[string]string{}, map[string]string{}, headers, body, result)
+func (c *Client) CallREST(opt ReqOption, result interface{}) error {
+	resp, err := c.Execute(opt)
+	if err != nil {
+		return err
+	}
+	if result != nil && resp != nil {
+		return json.Unmarshal(resp.Body(), result)
+	}
+	return nil
 }
 
-// CallWithoutBody gọi mà không có body
-func (c *Client) CallWithoutBody(ctx context.Context, method, path string, pathVars, params, headers map[string]string, result interface{}) error {
-	return c.CallREST(ctx, method, path, pathVars, params, headers, nil, result)
-}
-
-// CallREST là hàm gọi chính
-func (c *Client) CallREST(ctx context.Context, method, path string, pathVars, params, headers map[string]string, body, result interface{}) error {
-	// Tạo request chuẩn hóa
+func (c *Client) Execute(opt ReqOption) (*resty.Response, error) {
 	req := &Request{
-		Context:  ctx,
-		Method:   method,
-		Path:     path,
-		PathVars: pathVars,
-		Params:   params,
-		Headers:  headers,
-		Body:     body,
-		Result:   result,
+		Context:  opt.Context,
+		Method:   opt.Method,
+		Path:     opt.Path,
+		PathVars: opt.PathVars,
+		Params:   opt.Params,
+		Headers:  opt.Headers,
+		Body:     opt.Body,
 	}
 
 	handler := func(r *Request) error {
-		// Format path variables
 		p := formatPath(r.Path, r.PathVars)
-
 		reqResty := c.R().SetContext(r.Context)
 
-		// Set global headers
 		for k, v := range c.headers {
 			reqResty.SetHeader(k, v)
 		}
-
-		// Set custom headers
 		for k, v := range r.Headers {
 			reqResty.SetHeader(k, v)
 		}
-
-		// Set query params
 		if len(r.Params) > 0 {
 			reqResty.SetQueryParams(r.Params)
 		}
-
-		// Set body nếu có
 		if r.Body != nil {
 			reqResty.SetHeader("Content-Type", "application/json")
 			reqResty.SetBody(r.Body)
 		}
 
-		var resp *resty.Response
-		var err error
-
-		switch r.Method {
-		case http.MethodGet:
-			resp, err = reqResty.Get(p)
-		case http.MethodPost:
-			resp, err = reqResty.Post(p)
-		case http.MethodPut:
-			resp, err = reqResty.Put(p)
-		case http.MethodDelete:
-			resp, err = reqResty.Delete(p)
-		default:
-			return errors.New("unsupported HTTP method: " + r.Method)
-		}
+		resp, err := reqResty.Execute(r.Method, p)
 		if err != nil {
 			return err
 		}
+		r.Result = resp
 
-		// Check status
 		if !isValidStatus(r.Method, resp.StatusCode()) {
 			if c.Config.Debug {
-				fmt.Printf("Request failed. Method: %s, URL: %s, Status: %d, Body: %s\n",
-					r.Method, p, resp.StatusCode(), string(resp.Body()))
+				fmt.Printf("Request failed: %s %s (%d) => %s\n", r.Method, p, resp.StatusCode(), string(resp.Body()))
 			}
 			return errors.New("request failed with status: " + resp.Status())
-		}
-
-		if r.Result != nil {
-			return json.Unmarshal(resp.Body(), r.Result)
 		}
 		return nil
 	}
 
-	// Nếu có middleware thì chạy qua chain
+	final := handler
 	if len(c.middlewares) > 0 {
-		return c.buildChain(handler)(req)
+		final = c.buildChain(handler)
 	}
-	// Không có middleware thì chạy logic gốc
-	return handler(req)
+
+	if err := final(req); err != nil {
+		return nil, err
+	}
+	resp, ok := req.Result.(*resty.Response)
+	if !ok || resp == nil {
+		return nil, errors.New("unexpected or nil response")
+	}
+	return resp, nil
 }
 
 func (c *Client) CallSOAP(ctx context.Context, path string, soapAction string, body string, result interface{}) error {
@@ -194,7 +182,6 @@ func (c *Client) CallSOAP(ctx context.Context, path string, soapAction string, b
 	return nil
 }
 
-// Download tải file về và ghi vào writer
 func (c *Client) Download(ctx context.Context, path string, writer io.Writer) error {
 	resp, err := c.R().
 		SetContext(ctx).
@@ -214,7 +201,6 @@ func (c *Client) Download(ctx context.Context, path string, writer io.Writer) er
 	return err
 }
 
-// formatPath thay thế {key} trong path với pathVars[key]
 func formatPath(path string, pathVars map[string]string) string {
 	for k, v := range pathVars {
 		path = strings.ReplaceAll(path, "{"+k+"}", v)
@@ -222,7 +208,6 @@ func formatPath(path string, pathVars map[string]string) string {
 	return path
 }
 
-// isValidStatus kiểm tra mã trạng thái có hợp lệ không
 func isValidStatus(method string, status int) bool {
 	for _, code := range validStatusCodes[method] {
 		if status == code {
