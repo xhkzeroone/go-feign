@@ -1,12 +1,9 @@
 package feign
 
 import (
-	"context"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -19,31 +16,6 @@ var validStatusCodes = map[string][]int{
 	http.MethodPut:    {http.StatusOK},
 	http.MethodDelete: {http.StatusOK, http.StatusNoContent},
 }
-
-type Request struct {
-	Context  context.Context
-	Method   string
-	Path     string
-	PathVars map[string]string
-	Params   map[string]string
-	Headers  map[string]string
-	Body     interface{}
-	Result   interface{}
-}
-
-type ReqOption struct {
-	Context  context.Context
-	Method   string
-	Path     string
-	PathVars map[string]string
-	Params   map[string]string
-	Headers  map[string]string
-	Body     interface{}
-}
-
-type Handler func(req *Request) error
-
-type Middleware func(next Handler) Handler
 
 type Client struct {
 	*resty.Client
@@ -91,8 +63,8 @@ func (c *Client) buildChain(final Handler) Handler {
 	return final
 }
 
-func (c *Client) CallREST(opt ReqOption, result interface{}) error {
-	resp, err := c.Execute(opt)
+func (c *Client) Exchange(opt ReqOption, result interface{}) error {
+	resp, err := c.exchange(opt)
 	if err != nil {
 		return err
 	}
@@ -102,15 +74,15 @@ func (c *Client) CallREST(opt ReqOption, result interface{}) error {
 	return nil
 }
 
-func (c *Client) Execute(opt ReqOption) (*resty.Response, error) {
+func (c *Client) exchange(opt ReqOption) (*resty.Response, error) {
 	req := &Request{
-		Context:  opt.Context,
-		Method:   opt.Method,
-		Path:     opt.Path,
-		PathVars: opt.PathVars,
-		Params:   opt.Params,
-		Headers:  opt.Headers,
-		Body:     opt.Body,
+		Context:  opt.Context(),
+		Method:   opt.Method(),
+		Path:     opt.Path(),
+		PathVars: opt.PathVars(),
+		Params:   opt.Params(),
+		Headers:  opt.Headers(),
+		Body:     opt.Body(),
 	}
 
 	handler := func(r *Request) error {
@@ -139,7 +111,7 @@ func (c *Client) Execute(opt ReqOption) (*resty.Response, error) {
 
 		if !isValidStatus(r.Method, resp.StatusCode()) {
 			if c.Config.Debug {
-				fmt.Printf("Request failed: %s %s (%d) => %s\n", r.Method, p, resp.StatusCode(), string(resp.Body()))
+				fmt.Printf("request failed: %s %s (%d) => %s\n", r.Method, p, resp.StatusCode(), string(resp.Body()))
 			}
 			return errors.New("request failed with status: " + resp.Status())
 		}
@@ -159,46 +131,6 @@ func (c *Client) Execute(opt ReqOption) (*resty.Response, error) {
 		return nil, errors.New("unexpected or nil response")
 	}
 	return resp, nil
-}
-
-func (c *Client) CallSOAP(ctx context.Context, path string, soapAction string, body string, result interface{}) error {
-	req := c.R().
-		SetContext(ctx).
-		SetHeader("Content-Type", "text/xml; charset=utf-8").
-		SetHeader("SOAPAction", soapAction).
-		SetBody(body)
-
-	resp, err := req.Post(path)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode() != http.StatusOK {
-		return errors.New("SOAP request failed: " + resp.Status())
-	}
-
-	if result != nil {
-		return xml.Unmarshal(resp.Body(), result)
-	}
-	return nil
-}
-
-func (c *Client) Download(ctx context.Context, path string, writer io.Writer) error {
-	resp, err := c.R().
-		SetContext(ctx).
-		SetDoNotParseResponse(true).
-		Get(path)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode() != http.StatusOK {
-		return errors.New("request failed with status: " + resp.Status())
-	}
-	defer func(body io.ReadCloser) {
-		_ = body.Close()
-	}(resp.RawBody())
-
-	_, err = io.Copy(writer, resp.RawBody())
-	return err
 }
 
 func formatPath(path string, pathVars map[string]string) string {

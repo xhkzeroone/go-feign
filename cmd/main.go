@@ -26,13 +26,15 @@ type User struct {
 
 type UserClient struct {
 	*feign.Client
-	_            struct{}                                                                                                               `feign:"@Url http://localhost:8081/api/v1"`
-	GetUser      func(ctx context.Context, id string, auth string) (*User, error)                                                       `feign:"@GET /users/{id} | @Path id | @Header Authorization"`
-	GetUserById  func(ctx context.Context, user string, id string, auth string) (*User, error)                                          `feign:"@GET /users/{user} | @Path user | @Query id | @Header Authorization"`
-	GetUserByIds func(ctx context.Context, user string, queries map[string]string, headers map[string]string, id string) (*User, error) `feign:"@GET /users/{user} | @Path user | @Queries queries | @Headers headers | @Query id"`
-	CreateUser   func(ctx context.Context, user User, auth string) (*User, error)                                                       `feign:"@POST /users | @Body user | @Header Authorization"`
-	UpdateUser   func(ctx context.Context, user User, auth string) (*User, error)                                                       `feign:"@POST /users | @Body user | @Header Authorization"`
-	GetAllUser   func(ctx context.Context, auth string) ([]User, error)                                                                 `feign:"@POST /users | @Header Authorization"`
+	_            struct{}                                                                      `feign:"@Url http://localhost:8081/api/v1"`
+	GetUser      func(ctx context.Context, id string, auth string) (*User, error)              `feign:"@GET /users/{id} | @Path id | @Header Authorization"`
+	GetUserById  func(ctx context.Context, user string, id string, auth string) (*User, error) `feign:"@GET /users/{user} | @Path user | @Query id | @Header Authorization"`
+	GetUserByIds func(ctx context.Context, user string,
+		queries map[string]string, headers map[string]string,
+		id string) (*User, error) `feign:"@GET /users/{user} | @Path user | @Queries queries | @Headers headers | @Query id"`
+	CreateUser func(ctx context.Context, user User, auth string) (*User, error) `feign:"@POST /users | @Body user | @Header Authorization"`
+	UpdateUser func(ctx context.Context, user User, auth string) (*User, error) `feign:"@POST /users | @Body user | @Header Authorization"`
+	GetAllUser func(ctx context.Context, auth string) ([]User, error)           `feign:"@POST /users | @Header Authorization"`
 }
 
 type Config struct {
@@ -57,6 +59,26 @@ func main() {
 			err := next(req)
 			fmt.Printf("[Middleware] After: %s %s, err: %v\n", req.Method, req.Path, err)
 			return err
+		}
+	})
+
+	logMiddleware := func(next feign.Handler) feign.Handler {
+		return func(req *feign.Request) error {
+			fmt.Printf("[Middleware] Before: %s %s\n", req.Method, req.Path)
+			err := next(req)
+			fmt.Printf("[Middleware] After: %s %s, err: %v\n", req.Method, req.Path, err)
+			return err
+		}
+	}
+
+	client.Use(logMiddleware)
+
+	client.Use(func(next feign.Handler) feign.Handler {
+		return func(req *feign.Request) error {
+			req.Headers["X-Request-ID"] = "my-request-id"
+			req.Headers["X-Trace-Id"] = "trace-123"
+			req.Headers["X-My-Custom"] = "custom-value"
+			return next(req)
 		}
 	})
 
@@ -130,9 +152,16 @@ func main() {
 	user2, err := client.GetUserByIds(ctx, "123", queries, headers, "abc") // gọi được, vì func đã được gán
 	fmt.Println(user2, err)
 
-	//newUser := User{UserName: "Alice"}
-	//createdUser, err := client.CreateUser(newUser, "Bearer xyz")
-	//fmt.Println(createdUser, err)
+	newUser := User{UserName: "Alice"}
+
+	req := feign.NewRequest().
+		MethodPost().
+		WithPath("/users").
+		WithContext(ctx).
+		WithBody(newUser).
+		Build()
+	err = client.Exchange(req, &newUser)
+	fmt.Println(newUser, err)
 
 	//if err != nil {
 	//	var httpErr *feign.HttpError
